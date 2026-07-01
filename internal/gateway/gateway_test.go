@@ -10,9 +10,9 @@ import (
 	"time"
 
 	boxogateway "github.com/ipfs/boxo/gateway"
+	ipfs "go.lumeweb.com/ipfs-sdk"
 	"go.lumeweb.com/ipfs-website-gateway/internal/api"
 	"go.lumeweb.com/ipfs-website-gateway/internal/cache"
-	ipfs "go.lumeweb.com/ipfs-sdk"
 	"go.lumeweb.com/ipfs-website-gateway/pkg/types"
 	"go.uber.org/zap"
 )
@@ -278,6 +278,61 @@ func TestAccessControlMiddleware_ActiveDomain(t *testing.T) {
 	}
 }
 
+func TestAccessControlMiddleware_ActiveHNSHost(t *testing.T) {
+	apiClient := &mockAPIClient{
+		getWebsiteFunc: func(ctx context.Context, domain string) (*types.GatewayWebsiteResponse, error) {
+			if domain != "example" {
+				t.Errorf("expected HNS host example, got %s", domain)
+			}
+			return &types.GatewayWebsiteResponse{
+				Domain:     "example",
+				Status:     types.StatusActive,
+				TargetHash: "bafybeihns",
+				TargetType: "ipfs",
+			}, nil
+		},
+	}
+
+	gw, err := newTestGateway(apiClient, nil)
+	if err != nil {
+		t.Fatalf("newTestGateway: %v", err)
+	}
+
+	var receivedPath string
+	var receivedCtx context.Context
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		receivedCtx = r.Context()
+		w.WriteHeader(http.StatusOK)
+	})
+
+	middleware, err := NewAccessControlMiddleware(gw, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewAccessControlMiddleware: %v", err)
+	}
+	handler := middleware.Wrap(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	req.Host = "example"
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if receivedPath != "/ipfs/bafybeihns/index.html" {
+		t.Errorf("expected /ipfs/bafybeihns/index.html, got %s", receivedPath)
+	}
+	dnslinkHost, ok := receivedCtx.Value(boxogateway.DNSLinkHostnameKey).(string)
+	if !ok {
+		t.Error("expected DNSLinkHostnameKey to be set in context")
+	}
+	if dnslinkHost != "example" {
+		t.Errorf("expected DNSLinkHostnameKey to be 'example', got %s", dnslinkHost)
+	}
+}
+
 func TestAccessControlMiddleware_BrokenDomain(t *testing.T) {
 	apiClient := &mockAPIClient{
 		getWebsiteFunc: func(ctx context.Context, domain string) (*types.GatewayWebsiteResponse, error) {
@@ -513,12 +568,12 @@ func TestAccessControlMiddleware_XForwardedHost(t *testing.T) {
 			if domain != "behind-proxy.com" {
 				t.Errorf("expected domain behind-proxy.com, got %s", domain)
 			}
-		return &types.GatewayWebsiteResponse{
-			Domain:     "behind-proxy.com",
-			Status:     types.StatusActive,
-			TargetHash: "QmProxy",
-			TargetType: "ipfs",
-		}, nil
+			return &types.GatewayWebsiteResponse{
+				Domain:     "behind-proxy.com",
+				Status:     types.StatusActive,
+				TargetHash: "QmProxy",
+				TargetType: "ipfs",
+			}, nil
 		},
 	}
 
